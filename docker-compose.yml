@@ -1,0 +1,10 @@
+services:
+  grid-bot:
+    build: .
+    container_name: binance-grid-bot
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      # Mount .env with API keys (create this file before running)
+      - ./.env:/app/.env:ro

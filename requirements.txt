@@ -1,0 +1,10 @@
+binance-common==4.0.0
+binance-sdk-derivatives-trading-usds-futures==11.0.0
+python-dotenv==1.2.2
+requests>=2.34.2
+urllib3>=2.7.0
+pydantic>=2.10.0
+websockets>=15.0.1
+websocket-client>=1.6.3
+pycryptodome>=3.17
+aiohttp>=3.14.0
