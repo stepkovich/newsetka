@@ -7,7 +7,7 @@ from decimal import Decimal, ROUND_DOWN
 
 from dotenv import load_dotenv
 
-# All imports from the same path as examples.
+# All imports from the same path as examples:
 # binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures
 # Configuration classes + DerivativesTradingUsdsFutures + PROD URLs
 # (from examples in repo — they import from this deep path)
@@ -87,6 +87,7 @@ from config import (
     TREND_PROTECTION, TREND_WARMUP_MODE,
     REGRESSION_FAST_WINDOW, REGRESSION_SLOW_WINDOW,
     TREND_THRESHOLD_PERCENT,
+    WATCHDOG_TIMEOUT,
 )
 
 load_dotenv()
@@ -2461,6 +2462,7 @@ async def main():
     reconnect_delay = 5  # seconds, doubles on consecutive failures, max 60
     first_connection = True  # Track whether this is the initial connection
     last_health_check = time.time()
+    last_ws_update = [time.time()]  # [timestamp] — updated on every WS message, checked by watchdog
 
     # =========================================================================
     # Outer reconnection loop — wraps the entire WS lifecycle
@@ -2500,6 +2502,7 @@ async def main():
                 if symbol and price_str:
                     price = Decimal(price_str)
                     latest_prices[symbol] = price
+                    last_ws_update[0] = time.time()
                     # Update trend buffers
                     if TREND_PROTECTION and symbol in fast_buffers:
                         now = time.time()
@@ -2546,6 +2549,7 @@ async def main():
                     logging.warning(f"[USER_DATA] Unexpected data type: {type(data)} — skipping")
                     return
 
+                last_ws_update[0] = time.time()
                 event_type = data.get("e")
 
                 if event_type == "ORDER_TRADE_UPDATE":
@@ -2732,6 +2736,7 @@ async def main():
             # BEFORE WS connection, which caused missed fills.
             await sync_state_with_exchange(client, ws_api_connection, tp_sl_tracking, symbol_filters, position_cache)
             first_connection = False
+            last_ws_update[0] = time.time()  # Reset watchdog timer after successful connection
 
             # Main loop: check prices, manage grid, handle TP/SL
             while True:
@@ -2740,6 +2745,16 @@ async def main():
                 # Check if reconnect is needed (listenKeyExpired or external signal)
                 if ws_reconnect_flag[0]:
                     logging.warning("[RECONNECT] Reconnect flag set — breaking main loop for reconnection")
+                    break
+
+                # === Watchdog: detect dead WS connection ===
+                ws_silence = time.time() - last_ws_update[0]
+                if ws_silence > WATCHDOG_TIMEOUT:
+                    logging.critical(
+                        f"[WATCHDOG] No WS data for {ws_silence:.0f}s "
+                        f"(timeout={WATCHDOG_TIMEOUT}s) — connection likely dead, triggering reconnect"
+                    )
+                    ws_reconnect_flag[0] = True
                     break
 
                 # === TP/SL: handle signals from on_user_data callback ===

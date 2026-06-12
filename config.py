@@ -67,11 +67,11 @@ GRID_CANCEL_SHIFT_PERCENT = 0.08
 # With DCA volume, later orders will be larger: level i notional = base * multiplier^(i-1).
 # The bot calculates base_qty so that total notional across all levels fits
 # the allocated budget (balance * usage% / num_symbols / 2 sides).
-MIN_ORDER_USD = 5
-MAX_ORDER_USD = 5000
+MIN_ORDER_USD = 5.5
+MAX_ORDER_USD = 10
 
 # Percentage of available USDT balance to use for trading.
-BALANCE_USAGE_PERCENT = 80
+BALANCE_USAGE_PERCENT = 50
 
 # --- Take-profit and Stop-loss ---
 # TP is placed as a percentage from the average entry price.
@@ -116,3 +116,15 @@ REGRESSION_SLOW_WINDOW = 1200
 # Example: 0.05 means the slow regression must show >= 0.05% change
 # over its window to count as a trend.
 TREND_THRESHOLD_PERCENT = 0.3
+
+# =========================================================================
+# Watchdog
+# =========================================================================
+
+# Maximum number of seconds without receiving ANY WebSocket data
+# (mark price or user data events) before triggering a reconnect.
+# Mark price updates arrive every ~1-3 seconds normally.
+# Set this high enough to avoid false triggers during short Binance pauses,
+# but low enough to catch a truly dead connection.
+# 30 seconds = generous, allows for brief Binance hiccups.
+WATCHDOG_TIMEOUT = 30
