@@ -7,7 +7,7 @@ from decimal import Decimal, ROUND_DOWN
 
 from dotenv import load_dotenv
 
-# All imports from the same path as examples
+# All imports from the same path as examples.
 # binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures
 # Configuration classes + DerivativesTradingUsdsFutures + PROD URLs
 # (from examples in repo — they import from this deep path)
