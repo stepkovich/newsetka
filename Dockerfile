@@ -10,10 +10,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bot_ws.py .
+COPY bot.py .
 COPY config.py .
 
 # Create .env placeholder (user must provide real keys via volume mount)
 RUN touch .env
 
-CMD ["python", "bot_ws.py"]
+CMD ["python", "bot.py"]

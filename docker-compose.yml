@@ -1,7 +1,7 @@
 services:
   grid-bot:
     build: .
-    container_name: binance-grid-bot
+    container_name: newsetka
     restart: always
     env_file:
       - .env
