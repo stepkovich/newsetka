@@ -9,20 +9,20 @@
 # "demo"     — REST = DEMO URL, WS = TESTNET URLs
 # "testnet"  — all TESTNET URLs
 # "mainnet"  — all PROD URLs
-ENVIRONMENT = "demo"
+ENVIRONMENT = "mainnet"
 
 # --- Symbols ---
 # List of trading pairs the bot will manage.
-SYMBOLS = ["SUIUSDT", "DOGEUSDT"]
+SYMBOLS = ["DOGEUSDT"]
 
 # Desired settings per symbol
 SYMBOL_SETTINGS = {
-    "SUIUSDT": {
-        "leverage": 1,
-        "margin_type": "CROSSED",  # ISOLATED or CROSSED (must match ChangeMarginTypeMarginTypeEnum)
-    },
+    # "SUIUSDT": {
+    #     "leverage": 1,
+    #     "margin_type": "CROSSED",  # ISOLATED or CROSSED (must match ChangeMarginTypeMarginTypeEnum)
+    # },
     "DOGEUSDT": {
-        "leverage": 1,
+        "leverage": 75,
         "margin_type": "CROSSED",
     },
 }
@@ -60,7 +60,7 @@ GRID_VOLUME_MULTIPLIER = 1.5
 
 # How far the price must move from the grid center before the grid is
 # cancelled and re-placed at the new price (percentage).
-GRID_CANCEL_SHIFT_PERCENT = 0.08
+GRID_CANCEL_SHIFT_PERCENT = 0.07
 
 # --- Order sizing ---
 # Minimum and maximum notional value for the BASE (first) grid order (in USDT).
@@ -75,11 +75,11 @@ BALANCE_USAGE_PERCENT = 50
 
 # --- Take-profit and Stop-loss ---
 # TP is placed as a percentage from the average entry price.
-TP_PERCENT = 0.3
+TP_PERCENT = 0.07
 
 # SL is placed as a percentage below the last grid level
 # (the furthest order from mark price).
-SL_PERCENT = 1.0
+SL_PERCENT = 0.8
 
 # =========================================================================
 # Trend protection (linear regression on mark price)
@@ -98,7 +98,7 @@ TREND_PROTECTION = True
 #              placing any grid. Safer: no trades until trend is known.
 # "immediate" — start trading both sides immediately, and let trend
 #              protection kick in once enough data is collected.
-TREND_WARMUP_MODE = "immediate"
+TREND_WARMUP_MODE = "full"
 
 # Fast regression window in seconds.
 # Approx ~5 minutes = 300 seconds.
