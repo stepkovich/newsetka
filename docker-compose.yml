@@ -8,3 +8,5 @@ services:
     volumes:
       # Mount .env with API keys (create this file before running)
       - ./.env:/app/.env:ro
+      # Mount config.py — edit without rebuilding, just restart
+      - ./config.py:/app/config.py:ro
