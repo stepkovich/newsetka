@@ -67,7 +67,7 @@ GRID_CANCEL_SHIFT_PERCENT = 0.07
 # With DCA volume, later orders will be larger: level i notional = base * multiplier^(i-1).
 # The bot calculates base_qty so that total notional across all levels fits
 # the allocated budget (balance * usage% / num_symbols / 2 sides).
-MIN_ORDER_USD = 5.5
+MIN_ORDER_USD = 5.2
 MAX_ORDER_USD = 10
 
 # Percentage of available USDT balance to use for trading.
