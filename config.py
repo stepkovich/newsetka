@@ -5,7 +5,7 @@
 # Adjust values to your needs before running the bot.
 # =========================================================================
 
-# --- Environment ---
+# --- Environment --
 # "demo"     — REST = DEMO URL, WS = TESTNET URLs
 # "testnet"  — all TESTNET URLs
 # "mainnet"  — all PROD URLs
