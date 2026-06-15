@@ -10,3 +10,14 @@ services:
       - ./.env:/app/.env:ro
       # Mount config.py — edit without rebuilding, just restart
       - ./config.py:/app/config.py:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
+    networks:
+      - newsetka-net
+
+networks:
+  newsetka-net:
+    driver: bridge
