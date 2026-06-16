@@ -13,7 +13,7 @@ ENVIRONMENT = "mainnet"
 
 # --- Symbols ---
 # List of trading pairs the bot will manage.
-SYMBOLS = ["DOGEUSDC"]
+SYMBOLS = ["XRPUSDC"]
 
 # Desired settings per symbol
 SYMBOL_SETTINGS = {
@@ -21,7 +21,7 @@ SYMBOL_SETTINGS = {
     #     "leverage": 1,
     #     "margin_type": "CROSSED",  # ISOLATED or CROSSED (must match ChangeMarginTypeMarginTypeEnum)
     # },
-    "DOGEUSDC": {
+    "XRPUSDC": {
         "leverage": 75,
         "margin_type": "CROSSED",
     },
