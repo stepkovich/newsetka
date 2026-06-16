@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 import time
-from collections import deque
 from decimal import Decimal, ROUND_DOWN
 
 from dotenv import load_dotenv
@@ -85,8 +84,8 @@ from config import (
     MIN_ORDER_USD, MAX_ORDER_USD, BALANCE_USAGE_PERCENT,
     TP_PERCENT, SL_PERCENT,
     TREND_PROTECTION, TREND_WARMUP_MODE,
-    REGRESSION_FAST_WINDOW, REGRESSION_SLOW_WINDOW,
-    TREND_THRESHOLD_PERCENT,
+    KALMAN_PROCESS_NOISE, KALMAN_MEASUREMENT_NOISE,
+    KALMAN_MIN_TICKS, KALMAN_CONFIRM_TICKS, TREND_THRESHOLD_PERCENT,
     WATCHDOG_TIMEOUT,
 )
 
@@ -176,138 +175,154 @@ def round_quantity(quantity: Decimal, step_size: Decimal) -> str:
 # Trend protection (linear regression on mark price)
 # =========================================================================
 
-class PriceBuffer:
-    """Circular buffer for mark price history, trimmed by time window.
+class KalmanFilter:
+    """Kalman filter for trend detection — replaces PriceBuffer + regression.
 
-    Stores (timestamp, price) pairs where timestamp is float (seconds since epoch)
-    and price is Decimal. Automatically removes data older than max_seconds
-    from the latest timestamp — acts as a sliding window / ring buffer.
+    Tracks two state variables:
+      - price: estimated current price (smoothed)
+      - velocity: estimated price change rate (trend direction)
+
+    Two parameters (instead of fast/slow regression windows):
+      - Q (process_noise): how much the price can change on its own per tick.
+        Higher = filter reacts faster, but more noise.
+      - R (measurement_noise): how noisy the price data is.
+        Higher = filter trusts its prediction more, reacts slower.
+
+    The velocity (normalized as % of price) is the trend signal:
+      - velocity > threshold → UP trend
+      - velocity < -threshold → DOWN trend
+      - otherwise → NEUTRAL
     """
 
-    def __init__(self, max_seconds: int):
-        self.max_seconds = max_seconds
-        self._buffer = deque()
-        self._ready = False
+    def __init__(self, process_noise: float, measurement_noise: float,
+                 min_ticks: int, confirm_ticks: int = 5):
+        self.Q = Decimal(str(process_noise))
+        self.R = Decimal(str(measurement_noise))
+        self.min_ticks = min_ticks
+        self.confirm_ticks = confirm_ticks
 
-    def add(self, timestamp: float, price: Decimal):
-        """Add a new price point and trim old data."""
-        self._buffer.append((timestamp, price))
-        cutoff = timestamp - self.max_seconds
-        while self._buffer and self._buffer[0][0] < cutoff:
-            self._buffer.popleft()
-        if not self._ready and len(self._buffer) >= 2:
-            span = self._buffer[-1][0] - self._buffer[0][0]
-            if span >= self.max_seconds * 0.9:
-                self._ready = True
+        # State: [price, velocity]
+        self.price = None  # Decimal — initialized on first update
+        self.velocity = Decimal("0")
+
+        # Uncertainty (2x2 covariance as scalars for simplicity)
+        self.P_price = Decimal("1")  # uncertainty in price estimate
+        self.P_velocity = Decimal("1")  # uncertainty in velocity estimate
+        self.P_cross = Decimal("0")  # cross-covariance
+
+        self.tick_count = 0
+
+        # Trend confirmation: raw trend must persist for confirm_ticks
+        # before we report it. Prevents whipsaw on every 3-second tick.
+        self._confirmed_trend = "UNKNOWN"
+        self._raw_trend = "UNKNOWN"
+        self._raw_counter = 0
+
+    def update(self, measurement: Decimal):
+        """Update filter with a new price measurement.
+
+        Two steps:
+        1. Predict: extrapolate state forward
+        2. Correct: blend prediction with measurement using Kalman gain
+        """
+        self.tick_count += 1
+
+        if self.price is None:
+            # First measurement — initialize state
+            self.price = measurement
+            return
+
+        # === Step 1: Predict ===
+        predicted_price = self.price + self.velocity
+        predicted_velocity = self.velocity  # assume constant velocity
+
+        # Predict uncertainty (add process noise)
+        predicted_P_price = self.P_price + Decimal("2") * self.P_cross + self.P_velocity + self.Q
+        predicted_P_velocity = self.P_velocity + self.Q
+        predicted_P_cross = self.P_cross + self.P_velocity  # = P_cross + Q (simplified)
+
+        # === Step 2: Correct ===
+        innovation = measurement - predicted_price
+
+        # Kalman gain (scalar — we only measure price, not velocity)
+        S = predicted_P_price + self.R  # innovation covariance
+        if S == Decimal("0"):
+            return
+        K_price = predicted_P_price / S
+        K_velocity = predicted_P_cross / S
+
+        # Update state
+        self.price = predicted_price + K_price * innovation
+        self.velocity = predicted_velocity + K_velocity * innovation
+
+        # Update uncertainty
+        self.P_price = (Decimal("1") - K_price) * predicted_P_price
+        self.P_velocity = predicted_P_velocity - K_velocity * predicted_P_cross
+        self.P_cross = (Decimal("1") - K_price) * predicted_P_cross
 
     def is_ready(self) -> bool:
-        """Whether the buffer has data spanning at least 90% of the window."""
-        return self._ready
+        """Whether the filter has received enough data for reliable trend."""
+        return self.tick_count >= self.min_ticks
 
-    def data(self):
-        """Return all buffered data as list of (timestamp, price) tuples."""
-        return list(self._buffer)
+    def get_trend(self, threshold: Decimal) -> str:
+        """Determine trend direction from Kalman velocity.
 
-    def __len__(self):
-        return len(self._buffer)
+        Uses confirmation: the raw trend (from velocity) must persist
+        for confirm_ticks consecutive ticks before we report a change.
+        This prevents rapid UP↔DOWN whipsaw on every 3-second tick.
 
+        Special rule: NEUTRAL is reported immediately (no confirmation
+        needed) — we want to rebuild grids as soon as the trend fades.
 
-def calculate_regression_slope(buffer: PriceBuffer) -> Decimal | None:
-    """Calculate linear regression slope from price buffer.
+        Returns:
+            "UP"      — uptrend, do not trade SHORT
+            "DOWN"    — downtrend, do not trade LONG
+            "NEUTRAL" — sideways, trade both sides
+            "UNKNOWN" — not enough data yet
+        """
+        if not self.is_ready():
+            return "UNKNOWN"
 
-    Returns normalized slope as percentage change over the window,
-    or None if not enough data.
+        # Normalize velocity as percentage of current price
+        if self.price is None or self.price == Decimal("0"):
+            return "UNKNOWN"
 
-    Uses standard linear regression formula:
-        slope = (n * sum(xy) - sum(x) * sum(y)) / (n * sum(x^2) - (sum(x))^2)
+        normalized_velocity = (self.velocity / self.price) * Decimal("100")
 
-    Normalized: (slope * time_span) / mean_price * 100
-    This gives percentage like 0.5% or -1.2% — comparable across
-    different-priced assets (BTC at 100k vs DOGE at 0.1).
-    """
-    points = buffer.data()
-    n = len(points)
-    if n < 2:
-        return None
+        # Determine raw trend from velocity
+        if normalized_velocity > threshold:
+            raw = "UP"
+        elif normalized_velocity < -threshold:
+            raw = "DOWN"
+        else:
+            raw = "NEUTRAL"
 
-    t0 = Decimal(str(points[0][0]))
+        # Confirmation logic
+        if raw != self._raw_trend:
+            self._raw_trend = raw
+            self._raw_counter = 1
+        else:
+            self._raw_counter += 1
 
-    sum_x = Decimal("0")
-    sum_y = Decimal("0")
-    sum_xy = Decimal("0")
-    sum_x2 = Decimal("0")
+        # NEUTRAL is reported immediately — rebuild grids ASAP
+        if raw == "NEUTRAL":
+            self._confirmed_trend = "NEUTRAL"
+            return "NEUTRAL"
 
-    for timestamp, price in points:
-        x = Decimal(str(timestamp)) - t0
-        y = price
-        sum_x += x
-        sum_y += y
-        sum_xy += x * y
-        sum_x2 += x * x
+        # UP/DOWN require confirm_ticks consecutive ticks to confirm
+        if self._raw_counter >= self.confirm_ticks:
+            if raw != self._confirmed_trend:
+                self._confirmed_trend = raw
+            return self._confirmed_trend
 
-    n_dec = Decimal(n)
-    denominator = n_dec * sum_x2 - sum_x * sum_x
+        # Not yet confirmed — return previously confirmed trend
+        return self._confirmed_trend
 
-    if denominator == Decimal("0"):
-        return None
-
-    slope = (n_dec * sum_xy - sum_x * sum_y) / denominator
-
-    time_span = Decimal(str(points[-1][0])) - t0
-    if time_span <= Decimal("0"):
-        return None
-
-    mean_price = sum_y / n_dec
-    if mean_price <= Decimal("0"):
-        return None
-
-    normalized = (slope * time_span) / mean_price * Decimal("100")
-    return normalized
-
-
-def get_trend(fast_buffer: PriceBuffer, slow_buffer: PriceBuffer,
-              threshold: Decimal) -> str:
-    """Determine trend direction from regression slopes.
-
-    Uses slow regression as primary direction, fast as confirmation.
-
-    CRITICAL: Both buffers must be "ready" (is_ready()) before any trend
-    is determined. Without this check, get_trend() would return "NEUTRAL"
-    with just 2 data points (~6 seconds), making TREND_WARMUP_MODE="full"
-    useless — the bot would place grids almost immediately instead of
-    waiting for sufficient data to calculate a reliable regression slope.
-
-    The slow buffer requires data spanning ≥90% of REGRESSION_SLOW_WINDOW
-    (~18 minutes with default 1200s) before it reports is_ready()=True.
-    The fast buffer requires data spanning ≥90% of REGRESSION_FAST_WINDOW
-    (~4.5 minutes with default 300s).
-
-    Returns:
-        "UP"      — uptrend, do not trade SHORT
-        "DOWN"    — downtrend, do not trade LONG
-        "NEUTRAL" — sideways, trade both sides
-        "UNKNOWN" — not enough data yet (buffers not ready)
-    """
-    # Buffers must be ready before we trust any regression result.
-    # Without this, 2 data points are enough for calculate_regression_slope()
-    # to return a number, and get_trend() would return "NEUTRAL" almost
-    # immediately — defeating the purpose of TREND_WARMUP_MODE="full".
-    if not slow_buffer.is_ready() or not fast_buffer.is_ready():
-        return "UNKNOWN"
-
-    slow_slope = calculate_regression_slope(slow_buffer)
-    fast_slope = calculate_regression_slope(fast_buffer)
-
-    if slow_slope is None:
-        return "UNKNOWN"
-
-    # Slow slope determines direction, fast slope must agree (or be unknown)
-    if slow_slope > threshold and (fast_slope is None or fast_slope > Decimal("0")):
-        return "UP"
-    if slow_slope < -threshold and (fast_slope is None or fast_slope < Decimal("0")):
-        return "DOWN"
-
-    return "NEUTRAL"
+    def get_velocity_percent(self) -> Decimal:
+        """Get normalized velocity as percentage of price."""
+        if self.price is None or self.price == Decimal("0"):
+            return Decimal("0")
+        return (self.velocity / self.price) * Decimal("100")
 
 
 def should_trade_side(trend: str, position_side: str) -> bool:
@@ -335,6 +350,41 @@ def should_trade_side(trend: str, position_side: str) -> bool:
 # =========================================================================
 # Fibonacci sequence and grid geometry helpers
 # =========================================================================
+
+def _count_filled_levels(position_amt: Decimal, base_qty_str: str,
+                        step_size: Decimal) -> int:
+    """Count how many grid levels are filled based on position amount.
+
+    Uses DCA volume multipliers to accumulate qty level by level
+    until we reach (or exceed) the given position_amt.
+
+    Args:
+        position_amt: total position amount (absolute value)
+        base_qty_str: base quantity string for level 1
+        step_size: lot size precision for rounding
+
+    Returns:
+        Number of filled levels (0 if no match)
+    """
+    if not base_qty_str or position_amt <= Decimal("0"):
+        return 0
+
+    base_qty = Decimal(base_qty_str)
+    vol_mults = grid_level_volume_multipliers(GRID_ORDERS_PER_SIDE)
+
+    accumulated = Decimal("0")
+    n_filled = 0
+    for i in range(GRID_ORDERS_PER_SIDE):
+        level_qty = base_qty * vol_mults[i]
+        level_qty_rounded = Decimal(round_quantity(level_qty, step_size))
+        accumulated += level_qty_rounded
+        if accumulated <= position_amt + Decimal(round_quantity(base_qty * Decimal("0.1"), step_size)):
+            n_filled = i + 1
+        else:
+            break
+
+    return n_filled
+
 
 def fibonacci_sequence(n: int) -> list[int]:
     """Return first n Fibonacci numbers (starting with 1, 1, 2, 3, 5, ...).
@@ -2179,18 +2229,30 @@ async def main():
     # LONG and SHORT grids can be placed at different times and prices.
     center_prices = {}
 
-    # Trend protection: buffers and tracking
-    fast_buffers = {}
-    slow_buffers = {}
+    # Trend protection: Kalman filter and tracking
+    kalman_filters = {}
     current_trends = {}
+    # Track previous trend to detect changes — used for cancel/rebuild logic
+    prev_trends = {}
+    # Track how many levels are filled per (symbol, position_side) —
+    # needed to rebuild remaining levels after trend ends
+    filled_levels = {}
+    # Cache for quantity_str and step_size per symbol — needed when counting
+    # filled levels during trend change (cancel/rebuild logic)
+    quantity_str_cache = {}
+    step_size_cache = {}
     if TREND_PROTECTION:
         trend_threshold = Decimal(str(TREND_THRESHOLD_PERCENT))
         for symbol in SYMBOLS:
-            fast_buffers[symbol] = PriceBuffer(REGRESSION_FAST_WINDOW)
-            slow_buffers[symbol] = PriceBuffer(REGRESSION_SLOW_WINDOW)
+            kalman_filters[symbol] = KalmanFilter(
+                KALMAN_PROCESS_NOISE, KALMAN_MEASUREMENT_NOISE,
+                KALMAN_MIN_TICKS, KALMAN_CONFIRM_TICKS
+            )
             current_trends[symbol] = "UNKNOWN"
+            prev_trends[symbol] = "UNKNOWN"
         logging.info(f"Trend protection: ENABLED | warmup={TREND_WARMUP_MODE} | "
-                     f"fast={REGRESSION_FAST_WINDOW}s | slow={REGRESSION_SLOW_WINDOW}s | "
+                     f"Kalman Q={KALMAN_PROCESS_NOISE} R={KALMAN_MEASUREMENT_NOISE} | "
+                     f"min_ticks={KALMAN_MIN_TICKS} | confirm={KALMAN_CONFIRM_TICKS} | "
                      f"threshold={TREND_THRESHOLD_PERCENT}%")
     else:
         trend_threshold = Decimal("0")
@@ -2247,6 +2309,10 @@ async def main():
             step_size, min_qty, min_notional,
         )
 
+        # Cache for trend change cancel/rebuild logic
+        quantity_str_cache[symbol] = quantity_str
+        step_size_cache[symbol] = step_size
+
         if skipped:
             logging.warning(f"{symbol}: CANNOT place grid — order size below minimum. "
                             f"Need more balance or lower MIN_ORDER_USD.")
@@ -2254,9 +2320,10 @@ async def main():
 
         # Apply trend protection
         if TREND_PROTECTION:
-            trend = get_trend(fast_buffers[symbol], slow_buffers[symbol], trend_threshold)
+            trend = kalman_filters[symbol].get_trend(trend_threshold)
             current_trends[symbol] = trend
-            logging.info(f"[TREND] {symbol} initial trend: {trend}")
+            logging.info(f"[TREND] {symbol} initial trend: {trend} "
+                         f"(velocity={kalman_filters[symbol].get_velocity_percent():.6f}%)")
 
         # Get ALL open orders for this symbol (ONE REST call for both sides)
         # (from examples/rest_api/Trade/current_all_open_orders.py)
@@ -2469,7 +2536,7 @@ async def main():
     # On WS drop or listenKeyExpired: clean up, create fresh listen key,
     # create new WS connection, resubscribe, sync state.
     # Shared state (latest_prices, tp_sl_tracking, grid_replace_needed,
-    # center_prices, fast_buffers, slow_buffers, current_trends) persists
+    # center_prices, kalman_filters, current_trends, prev_trends, filled_levels) persists
     # across reconnections — only WS connection and listen key are recreated.
     # WS API connection is also recreated on reconnection (3-channel architecture).
     # =========================================================================
@@ -2503,11 +2570,9 @@ async def main():
                     price = Decimal(price_str)
                     latest_prices[symbol] = price
                     last_ws_update[0] = time.time()
-                    # Update trend buffers
-                    if TREND_PROTECTION and symbol in fast_buffers:
-                        now = time.time()
-                        fast_buffers[symbol].add(now, price)
-                        slow_buffers[symbol].add(now, price)
+                    # Update trend filter
+                    if TREND_PROTECTION and symbol in kalman_filters:
+                        kalman_filters[symbol].update(price)
 
             for symbol in SYMBOLS:
                 stream = await ws_streams_connection.mark_price_stream(
@@ -3021,7 +3086,7 @@ async def main():
 
                         # Trend protection: don't re-place grid against trend
                         if TREND_PROTECTION:
-                            trend = get_trend(fast_buffers[symbol], slow_buffers[symbol], trend_threshold)
+                            trend = kalman_filters[symbol].get_trend(trend_threshold)
                             current_trends[symbol] = trend
                             if not should_trade_side(trend, position_side):
                                 logging.info(f"[TREND] {symbol} {position_side}: skipping grid re-placement — trend is {trend}")
@@ -3066,7 +3131,7 @@ async def main():
                             center_prices[(symbol, position_side)] = current_price
                             logging.info(f"[GRID] {symbol} {position_side} center price updated: {current_price}")
 
-                # === Trend protection: detect changes and place/cancel grids ===
+                # === Trend protection: detect changes, cancel/rebuild grids ===
                 if TREND_PROTECTION:
                     for symbol in SYMBOLS:
                         if symbol not in symbol_filters:
@@ -3074,18 +3139,156 @@ async def main():
                         if symbol not in latest_prices:
                             continue
 
-                        trend = get_trend(fast_buffers[symbol], slow_buffers[symbol], trend_threshold)
-                        prev_trend = current_trends.get(symbol, "UNKNOWN")
+                        trend = kalman_filters[symbol].get_trend(trend_threshold)
+                        prev_trend = prev_trends.get(symbol, "UNKNOWN")
                         current_trends[symbol] = trend
 
                         if trend != prev_trend:
-                            logging.info(f"[TREND] {symbol} trend changed: {prev_trend} → {trend}")
+                            velocity = kalman_filters[symbol].get_velocity_percent()
+                            logging.info(f"[TREND] {symbol} trend changed: {prev_trend} → {trend} "
+                                         f"(velocity={velocity:.6f}%)")
 
+                            # ─── Trend started → cancel grid against trend ───
+                            # When trend changes to DOWN → cancel LONG grid
+                            # When trend changes to UP → cancel SHORT grid
+                            # Position stays with current TP/SL — we don't close it.
+                            if trend == "DOWN":
+                                key = (symbol, "LONG")
+                                if key in center_prices:
+                                    logging.info(f"[TREND] {symbol} LONG: trend DOWN → "
+                                                 f"cancelling LONG grid (position stays)")
+                                    await cancel_grid_side(client, symbol, "LONG")
+                                    del center_prices[key]
+                                    # Record filled levels for rebuild when trend ends
+                                    cached_pos = position_cache.get(key)
+                                    if cached_pos and cached_pos["position_amt"] != Decimal("0"):
+                                        # Count filled levels from position amount
+                                        n_filled = _count_filled_levels(
+                                            cached_pos["position_amt"], quantity_str_cache.get(symbol, ""), step_size_cache.get(symbol, Decimal("1"))
+                                        )
+                                        filled_levels[key] = n_filled
+                                        logging.info(f"[TREND] {symbol} LONG: {n_filled} levels filled, "
+                                                     f"will rebuild when trend ends")
+
+                            elif trend == "UP":
+                                key = (symbol, "SHORT")
+                                if key in center_prices:
+                                    logging.info(f"[TREND] {symbol} SHORT: trend UP → "
+                                                 f"cancelling SHORT grid (position stays)")
+                                    await cancel_grid_side(client, symbol, "SHORT")
+                                    del center_prices[key]
+                                    cached_pos = position_cache.get(key)
+                                    if cached_pos and cached_pos["position_amt"] != Decimal("0"):
+                                        n_filled = _count_filled_levels(
+                                            cached_pos["position_amt"], quantity_str_cache.get(symbol, ""), step_size_cache.get(symbol, Decimal("1"))
+                                        )
+                                        filled_levels[key] = n_filled
+                                        logging.info(f"[TREND] {symbol} SHORT: {n_filled} levels filled, "
+                                                     f"will rebuild when trend ends")
+
+                            # ─── Trend ended (→ NEUTRAL) → rebuild remaining levels ───
+                            if trend == "NEUTRAL" and prev_trend in ("DOWN", "UP"):
+                                for position_side in ("LONG", "SHORT"):
+                                    key = (symbol, position_side)
+                                    n_filled = filled_levels.get(key, 0)
+
+                                    # Only rebuild if there was a cancelled grid with unfilled levels
+                                    if n_filled <= 0 or n_filled >= GRID_ORDERS_PER_SIDE:
+                                        filled_levels.pop(key, None)
+                                        continue
+
+                                    # Check if position still exists
+                                    cached_pos = position_cache.get(key)
+                                    if cached_pos is None or cached_pos["position_amt"] == Decimal("0"):
+                                        # Position closed while trend was active — no rebuild needed
+                                        filled_levels.pop(key, None)
+                                        continue
+
+                                    # Rebuild remaining levels from CURRENT price with DCA continuation
+                                    current_price = latest_prices[symbol]
+                                    tick_size = symbol_filters[symbol]["tick_size"]
+                                    step_size = symbol_filters[symbol]["step_size"]
+                                    min_qty = symbol_filters[symbol]["min_qty"]
+                                    min_notional = symbol_filters[symbol]["min_notional"]
+                                    settings = SYMBOL_SETTINGS.get(symbol)
+                                    if not settings:
+                                        filled_levels.pop(key, None)
+                                        continue
+                                    leverage = settings["leverage"]
+
+                                    logging.info(f"[TREND] {symbol} {position_side}: trend NEUTRAL → "
+                                                 f"rebuilding levels {n_filled+1}-{GRID_ORDERS_PER_SIDE} "
+                                                 f"from current_price={current_price} ({n_filled} filled)")
+
+                                    available_balance = await get_available_balance(ws_api_connection)
+                                    quantity_str, notional_val, skipped = calculate_order_quantity(
+                                        available_balance, symbol, leverage, current_price,
+                                        step_size, min_qty, min_notional,
+                                    )
+
+                                    if not skipped:
+                                        # Build remaining levels from current price
+                                        # Uses DCA volume continuation (levels 8-12 with vol_mult 17-86x)
+                                        remaining_orders = build_remaining_grid_orders(
+                                            symbol, current_price, current_price, tick_size,
+                                            quantity_str, step_size, position_side, n_filled,
+                                        )
+                                        if remaining_orders:
+                                            place_orders_batched(client, symbol, remaining_orders)
+                                            center_prices[key] = current_price
+                                            logging.info(f"[TREND] {symbol} {position_side}: "
+                                                         f"{len(remaining_orders)} remaining levels placed")
+
+                                        # Recalculate SL from new deepest level
+                                        # Cancel old SL, place new one
+                                        tracking = tp_sl_tracking.get(key)
+                                        if tracking and tracking.get("sl_algo_id", 0) != 0:
+                                            old_sl_id = tracking["sl_algo_id"]
+                                            try:
+                                                # (from examples/rest_api/Trade/cancel_algo_order.py)
+                                                response = client.rest_api.cancel_algo_order(
+                                                    algo_id=old_sl_id,
+                                                )
+                                                logging.info(f"[TREND] {symbol} {position_side}: "
+                                                             f"cancelled old SL algoId={old_sl_id}")
+                                            except Exception as e:
+                                                logging.warning(f"[TREND] Failed to cancel old SL "
+                                                                f"algoId={old_sl_id}: {e}")
+
+                                            # Place new SL from current price
+                                            sl_trigger = compute_sl_trigger(
+                                                symbol, current_price, tick_size, position_side
+                                            )
+                                            new_sl_id = await retry_api_call(
+                                                lambda: place_stop_loss(
+                                                    ws_api_connection, symbol, position_side, sl_trigger
+                                                ),
+                                                operation_name=f"rebuild SL {symbol} {position_side}",
+                                            )
+                                            if new_sl_id:
+                                                tracking["sl_algo_id"] = new_sl_id
+                                                logging.info(f"[TREND] {symbol} {position_side}: "
+                                                             f"new SL placed algoId={new_sl_id} "
+                                                             f"trigger={sl_trigger}")
+                                            else:
+                                                logging.error(f"[TREND] {symbol} {position_side}: "
+                                                              f"FAILED to place new SL after trend rebuild!")
+
+                                    else:
+                                        logging.warning(f"[TREND] {symbol} {position_side}: "
+                                                        f"cannot rebuild — order size below minimum")
+
+                                    filled_levels.pop(key, None)
+
+                        # Update prev_trends AFTER processing changes
+                        prev_trends[symbol] = trend
+
+                        # ─── Standard trend logic: place new grids when allowed ───
                         for position_side in ("LONG", "SHORT"):
                             key = (symbol, position_side)
 
                             if not should_trade_side(trend, position_side):
-                                # Use cached position data instead of REST call
+                                # No position → cancel grid if it exists
                                 cached_pos = position_cache.get(key)
                                 if cached_pos is None or cached_pos["position_amt"] == Decimal("0"):
                                     if key in center_prices:
