@@ -1,11 +1,11 @@
-# ========================================================================
+# =========================================================================
 # Bot configuration
-# ========================================================================
+# =========================================================================
 # All parameters the bot imports from this file.
 # Adjust values to your needs before running the bot.
 # =========================================================================
 
-# --- Environment --
+# --- Environment ---
 # "demo"     — REST = DEMO URL, WS = TESTNET URLs
 # "testnet"  — all TESTNET URLs
 # "mainnet"  — all PROD URLs
@@ -13,18 +13,18 @@ ENVIRONMENT = "mainnet"
 
 # --- Symbols ---
 # List of trading pairs the bot will manage.
-SYMBOLS = ["DOGEUSDC"]
+SYMBOLS = ["XRPUSDC"]
 
 # Desired settings per symbol
 SYMBOL_SETTINGS = {
-    # "SUIUSDT": {
-    #     "leverage": 1,
-    #     "margin_type": "CROSSED",  # ISOLATED or CROSSED (must match ChangeMarginTypeMarginTypeEnum)
-    # },
-    "DOGEUSDC": {
+    "XRPUSDC": {
         "leverage": 75,
-        "margin_type": "CROSSED",
+        "margin_type": "CROSSED",  # ISOLATED or CROSSED (must match ChangeMarginTypeMarginTypeEnum)
     },
+    # "DOGEUSDT": {
+    #     "leverage": 2,
+    #     "margin_type": "CROSSED",
+    # },
 }
 
 # --- Position mode ---
@@ -75,47 +75,68 @@ BALANCE_USAGE_PERCENT = 50
 
 # --- Take-profit and Stop-loss ---
 # TP is placed as a percentage from the average entry price.
-TP_PERCENT = 0.07
+TP_PERCENT = 0.03
 
 # SL is placed as a percentage below the last grid level
 # (the furthest order from mark price).
 SL_PERCENT = 0.8
 
 # =========================================================================
-# Trend protection (linear regression on mark price)
+# Trend protection (Kalman filter on mark price)
 # =========================================================================
 
 # Enable or disable trend protection.
-# When enabled, the bot will not place grid orders against the detected
-# trend if there is no existing position on that side.
+# When enabled, the bot will:
+#   - Cancel grid orders against the detected trend
+#   - Rebuild remaining levels when trend ends (NEUTRAL)
 # True  — trend protection active
 # False — trade both sides regardless of trend
 TREND_PROTECTION = True
 
-# Warm-up mode controls what happens at bot start when the regression
-# buffers are still empty (no data yet).
-# "full"     — wait for regression buffers to fill completely before
-#              placing any grid. Safer: no trades until trend is known.
+# Warm-up mode controls what happens at bot start when the Kalman
+# filter hasn't received enough data yet.
+# "full"     — wait for KALMAN_MIN_TICKS data points before placing
+#              any grid. Safer: no trades until trend is known.
 # "immediate" — start trading both sides immediately, and let trend
 #              protection kick in once enough data is collected.
 TREND_WARMUP_MODE = "full"
 
-# Fast regression window in seconds.
-# Approx ~5 minutes = 300 seconds.
-# The fast regression reacts quickly to recent price changes.
-REGRESSION_FAST_WINDOW = 300
+# Kalman filter parameters — replace regression windows.
+# Only 2 parameters instead of fast/slow windows + threshold.
 
-# Slow regression window in seconds.
-# Approx ~20 minutes = 1200 seconds.
-# The slow regression determines the primary trend direction.
-REGRESSION_SLOW_WINDOW = 1200
+# Process noise (Q) — how much the price can change on its own per tick.
+# Higher = filter reacts faster, but more noise in the trend signal.
+# Lower = filter smoother, but slower to detect trend changes.
+# Typical range: 0.0001 – 0.01
+KALMAN_PROCESS_NOISE = 0.002
 
-# Trend threshold as a percentage.
-# If the normalized regression slope exceeds this value, the market is
-# considered to be in a trend. Below this value = sideways / NEUTRAL.
-# Example: 0.05 means the slow regression must show >= 0.05% change
-# over its window to count as a trend.
-TREND_THRESHOLD_PERCENT = 0.3
+# Measurement noise (R) — how noisy the price data is.
+# Higher = filter trusts its prediction more, reacts slower (smoother).
+# Lower = filter trusts the price data more, reacts faster (noisier).
+# With R=0.01, Kalman gain ≈ Q/(Q+R) ≈ 0.17 → only 17% of each tick
+# affects the state — much smoother than R=0.001 (50% per tick).
+# Typical range: 0.001 – 0.1
+KALMAN_MEASUREMENT_NOISE = 0.01
+
+# Minimum number of price ticks before the Kalman filter reports
+# a trend. Prevents false signals from just a few data points.
+# At ~3 sec/tick, 30 ticks = ~90 seconds of warm-up.
+KALMAN_MIN_TICKS = 100
+
+# Trend confirmation: raw UP/DOWN must persist for this many
+# consecutive ticks before the filter reports it as confirmed.
+# Prevents rapid UP↔DOWN whipsaw on every 3-second tick.
+# At ~3 sec/tick, 5 ticks = ~15 seconds of sustained move needed.
+# NEUTRAL is reported immediately (no confirmation) — we want to
+# rebuild grids as soon as the trend fades.
+KALMAN_CONFIRM_TICKS = 5
+
+# Trend threshold as a percentage of price change per tick.
+# If the Kalman velocity exceeds this, the market is considered
+# to be in a trend. Below this = sideways / NEUTRAL.
+# With R=0.01, typical velocity noise is ~0.001-0.005%.
+# 0.005% threshold filters out noise while catching real moves.
+TREND_THRESHOLD_PERCENT = 0.005
 
 # =========================================================================
 # Watchdog
