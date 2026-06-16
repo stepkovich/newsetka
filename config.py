@@ -24,7 +24,7 @@ SYMBOL_SETTINGS = {
     "XRPUSDC": {
         "leverage": 75,
         "margin_type": "CROSSED",
-    },
+    }
 }
 
 # --- Position mode ---
