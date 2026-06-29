@@ -98,7 +98,7 @@ TREND_PROTECTION = True
 #              placing any grid. Safer: no trades until trend is known.
 # "immediate" — start trading both sides immediately, and let trend
 #              protection kick in once enough data is collected.
-TREND_WARMUP_MODE = "full"
+TREND_WARMUP_MODE = "immediate"
 
 # Fast regression window in seconds.
 # Approx ~5 minutes = 300 seconds.
