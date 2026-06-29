@@ -30,6 +30,10 @@ from binance_sdk_derivatives_trading_usds_futures import (
     ServerError,
     NetworkError,
     BadRequestError,
+    UnauthorizedError,
+    ForbiddenError,
+    RateLimitBanError,
+    NotFoundError,
 )
 # IMPORTANT: BadRequestError is NOT a subclass of ClientError! They are siblings.
 # Both inherit from binance_common.errors.Error. Catching ClientError alone
@@ -93,6 +97,58 @@ from config import (
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-5s | %(message)s")
+
+
+# =========================================================================
+# WS API death detection
+# =========================================================================
+# Module-level reference to ws_reconnect_flag — set by main() on startup.
+# Allows top-level functions (get_available_balance, place_stop_loss, etc.)
+# to signal WS API death without changing their signatures.
+# Pattern: main() owns ws_reconnect_flag = [False], assigns it here.
+# Top-level functions call _signal_ws_api_death() when they detect a
+# transport error. Main loop checks ws_reconnect_flag[0] each iteration.
+_ws_reconnect_flag_ref = None
+
+
+def _is_transport_error(error: Exception) -> bool:
+    """Detect if an error indicates WS API connection is dead/unusable.
+
+    These errors mean the underlying aiohttp transport is closing/closed,
+    and any subsequent WS API calls will also fail — reconnect is needed.
+    Based on aiohttp error messages (NOT in Binance SDK examples — this is
+    a wrapper for transport-level errors below the SDK).
+    """
+    error_str = str(error).lower()
+    transport_markers = [
+        "cannot write to closing transport",
+        "connection closed",
+        "ws closed",
+        "connection reset",
+        "session is closing",
+        "server disconnected",
+        "clientconnectorerror",
+        "connectionlost",
+        "asyncio.timeout",
+        "timeouterror",
+    ]
+    return any(marker in error_str for marker in transport_markers)
+
+
+def _signal_ws_api_death(reason: str):
+    """Signal that WS API connection is dead — trigger reconnect.
+
+    Sets the module-level reconnect flag (if initialized), which the main
+    loop checks every iteration. The main loop will then break out and
+    run the existing reconnection sequence (close WS API + WS Streams,
+    new listen key, new connections, sync state).
+    """
+    if _ws_reconnect_flag_ref is not None:
+        _ws_reconnect_flag_ref[0] = True
+        logging.critical(
+            f"[WS_API] Connection death detected: {reason} "
+            f"— reconnect flagged"
+        )
 
 
 def get_urls():
@@ -445,7 +501,10 @@ async def get_available_balance(ws_api_connection) -> Decimal:
         return Decimal("0")
 
     except Exception as e:
-        logging.error(f"futures_account_balance_v2() error: {e}")
+        if _is_transport_error(e):
+            _signal_ws_api_death(f"futures_account_balance_v2: {e}")
+        else:
+            logging.error(f"futures_account_balance_v2() error: {e}")
         return Decimal("0")
 
 
@@ -1027,7 +1086,10 @@ async def get_positions_for_symbol(ws_api_connection, symbol: str) -> dict:
                         }
 
     except Exception as e:
-        logging.error(f"position_information_v2({symbol}) error: {e}")
+        if _is_transport_error(e):
+            _signal_ws_api_death(f"position_information_v2({symbol}): {e}")
+        else:
+            logging.error(f"position_information_v2({symbol}) error: {e}")
 
     return result
 
@@ -1126,7 +1188,10 @@ async def place_stop_loss(ws_api_connection, symbol: str, position_side: str,
         logging.error(f"new_algo_order STOP_MARKET error: {e}")
         return 0
     except Exception as e:
-        logging.error(f"new_algo_order STOP_MARKET error: {e}")
+        if _is_transport_error(e):
+            _signal_ws_api_death(f"new_algo_order STOP_MARKET: {e}")
+        else:
+            logging.error(f"new_algo_order STOP_MARKET error: {e}")
         return 0
 
 
@@ -1184,7 +1249,10 @@ async def place_take_profit(ws_api_connection, symbol: str, position_side: str,
         logging.error(f"new_order TAKE-PROFIT error: {e}")
         return 0
     except Exception as e:
-        logging.error(f"new_order TAKE-PROFIT error: {e}")
+        if _is_transport_error(e):
+            _signal_ws_api_death(f"new_order TAKE-PROFIT: {e}")
+        else:
+            logging.error(f"new_order TAKE-PROFIT error: {e}")
         return 0
 
 
@@ -1260,7 +1328,10 @@ async def modify_take_profit(ws_api_connection, symbol: str, position_side: str,
             logging.info(f"modify_order TAKE-PROFIT: order already correct "
                          f"orderId={tp_order_id} (-5027 in catch-all)")
             return True
-        logging.error(f"modify_order TAKE-PROFIT error: {e}")
+        if _is_transport_error(e):
+            _signal_ws_api_death(f"modify_order TAKE-PROFIT: {e}")
+        else:
+            logging.error(f"modify_order TAKE-PROFIT error: {e}")
         return False
 
 
@@ -1284,7 +1355,10 @@ async def cancel_tp_order(ws_api_connection, symbol: str, order_id: int) -> bool
         if "-2011" in str(e) or "Unknown order" in str(e):
             logging.info(f"TP already cancelled/filled: orderId={order_id}")
             return True
-        logging.warning(f"cancel_order error for orderId={order_id}: {e}")
+        if _is_transport_error(e):
+            _signal_ws_api_death(f"cancel_order (TP orderId={order_id}): {e}")
+        else:
+            logging.warning(f"cancel_order error for orderId={order_id}: {e}")
         return False
 
 
@@ -1913,14 +1987,22 @@ async def main():
         api_key=api_key,
         api_secret=api_secret,
         base_path=rest_url,
+        timeout=10000,        # 10s (was 1000ms default) — slower networks
+        retries=5,            # 5 retries (was 3 default) — more resilient
+        backoff=2000,         # 2s base (was 1000ms default) — gentler backoff
     )
     configuration_ws_api = ConfigurationWebSocketAPI(
         api_key=api_key,
         api_secret=api_secret,
         stream_url=ws_api_url,
+        timeout=10000,        # 10s (was 5000ms default)
+        reconnect_delay=3000, # 3s (was 5000ms default) — faster reconnect
+        session_re_logon=True,
+        return_rate_limits=True,
     )
     configuration_ws_streams = ConfigurationWebSocketStreams(
         stream_url=ws_streams_url,
+        reconnect_delay=3000, # 3s (was 5000ms default) — faster reconnect
     )
 
     client = DerivativesTradingUsdsFutures(
@@ -2459,6 +2541,9 @@ async def main():
     ws_streams_connection = None
     keepalive_task = None
     ws_reconnect_flag = [False]  # [True] when reconnect needed (listenKeyExpired or WS drop)
+    # Bind module-level reference so top-level functions can signal WS API death
+    global _ws_reconnect_flag_ref
+    _ws_reconnect_flag_ref = ws_reconnect_flag
     reconnect_delay = 5  # seconds, doubles on consecutive failures, max 60
     first_connection = True  # Track whether this is the initial connection
     last_health_check = time.time()
@@ -2832,13 +2917,20 @@ async def main():
 
                                     async def _do_market_close(s=symbol, cs=close_side, cp=close_ps, cq=close_qty_str, ws=ws_api_connection):
                                         # Use WS API for market close (TP/SL operations)
-                                        response = await ws.new_order(
-                                            symbol=s, side=cs, type="MARKET",
-                                            position_side=cp, quantity=float(cq),
-                                            new_order_resp_type="ACK", recv_window=5000,
-                                        )
-                                        result = response.data().result
-                                        return result.order_id if result and result.order_id else 0
+                                        try:
+                                            response = await ws.new_order(
+                                                symbol=s, side=cs, type="MARKET",
+                                                position_side=cp, quantity=float(cq),
+                                                new_order_resp_type="ACK", recv_window=5000,
+                                            )
+                                            result = response.data().result
+                                            return result.order_id if result and result.order_id else 0
+                                        except Exception as e:
+                                            if _is_transport_error(e):
+                                                _signal_ws_api_death(f"_do_market_close: {e}")
+                                            else:
+                                                logging.error(f"_do_market_close error: {e}")
+                                            return 0
 
                                     close_result = await retry_api_call(
                                         _do_market_close,
