@@ -13,14 +13,14 @@ ENVIRONMENT = "mainnet"
 
 # --- Symbols ---
 # List of trading pairs the bot will manage.
-SYMBOLS = ["XRPUSDC"]
+SYMBOLS = ["XRPUSDC", "ETHUSDC"]
 
 # Desired settings per symbol
 SYMBOL_SETTINGS = {
-    # "SUIUSDT": {
-    #     "leverage": 1,
-    #     "margin_type": "CROSSED",  # ISOLATED or CROSSED (must match ChangeMarginTypeMarginTypeEnum)
-    # },
+    "ETHUSDC": {
+        "leverage": 125,
+        "margin_type": "CROSSED",  # ISOLATED or CROSSED (must match ChangeMarginTypeMarginTypeEnum)
+    },
     "XRPUSDC": {
         "leverage": 75,
         "margin_type": "CROSSED",
