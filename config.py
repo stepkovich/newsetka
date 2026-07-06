@@ -13,14 +13,14 @@ ENVIRONMENT = "mainnet"
 
 # --- Symbols ---
 # List of trading pairs the bot will manage.
-SYMBOLS = ["XRPUSDC", "ETHUSDC"]
+SYMBOLS = ["XRPUSDC"]
 
 # Desired settings per symbol
 SYMBOL_SETTINGS = {
-    "ETHUSDC": {
-        "leverage": 125,
-        "margin_type": "CROSSED",  # ISOLATED or CROSSED (must match ChangeMarginTypeMarginTypeEnum)
-    },
+    # "ETHUSDC": {
+    #     "leverage": 125,
+    #     "margin_type": "CROSSED",  # ISOLATED or CROSSED (must match ChangeMarginTypeMarginTypeEnum)
+    # },
     "XRPUSDC": {
         "leverage": 75,
         "margin_type": "CROSSED",
@@ -67,8 +67,8 @@ GRID_CANCEL_SHIFT_PERCENT = 0.07
 # With DCA volume, later orders will be larger: level i notional = base * multiplier^(i-1).
 # The bot calculates base_qty so that total notional across all levels fits
 # the allocated budget (balance * usage% / num_symbols / 2 sides).
-MIN_ORDER_USD = 20.5
-MAX_ORDER_USD = 25
+MIN_ORDER_USD = 5.5
+MAX_ORDER_USD = 5.5
 
 # Percentage of available USDT balance to use for trading.
 BALANCE_USAGE_PERCENT = 50
