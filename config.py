@@ -34,7 +34,7 @@ HEDGE_MODE = True
 
 # --- Grid settings ---
 # Number of limit orders per side (LONG / SHORT)
-GRID_ORDERS_PER_SIDE = 12
+GRID_ORDERS_PER_SIDE = 8
 
 # Base distance for the first grid level as percentage.
 # With Fibonacci step mode, level i gap = fib(i) * GRID_BASE_STEP_PERCENT.
@@ -42,7 +42,7 @@ GRID_ORDERS_PER_SIDE = 12
 # Level 5 gap = 5 * 0.03% = 0.15%
 # Level 12 gap = 144 * 0.03% = 4.32%
 # Total coverage with 12 Fib levels and base_step=0.03% ≈ 11.28%
-GRID_BASE_STEP_PERCENT = 0.015
+GRID_BASE_STEP_PERCENT = 0.02
 
 # Grid step mode:
 # "fibonacci" — gaps follow Fibonacci sequence: 1, 1, 2, 3, 5, 8, 13, 21, ...
@@ -56,7 +56,7 @@ GRID_STEP_MODE = "fibonacci"
 # 1.0 = equal volume on all levels (old behavior)
 # 1.5 = conservative DCA (level 12 = 86.5x base_qty)
 # 2.0 = standard DCA (level 12 = 2048x base_qty)
-GRID_VOLUME_MULTIPLIER = 1.2
+GRID_VOLUME_MULTIPLIER = 1.5
 
 # How far the price must move from the grid center before the grid is
 # cancelled and re-placed at the new price (percentage).
