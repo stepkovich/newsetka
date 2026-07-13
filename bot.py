@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import logging.handlers
 import os
 import time
 from collections import deque
@@ -97,6 +98,34 @@ from config import (
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-5s | %(message)s")
+
+# =========================================================================
+# File logging — RotatingFileHandler
+# =========================================================================
+# Logs are written to /app/logs/bot.log inside the container, which is
+# mounted to ./logs/ on the host via docker-compose.yml volume.
+# Rotation: 50 MB per file, 5 files kept = 250 MB max on disk.
+# If the directory cannot be created (e.g., no volume mount), we fall
+# back to stdout-only logging so the bot still runs.
+LOG_DIR = os.environ.get("BOT_LOG_DIR", "/app/logs")
+try:
+    os.makedirs(LOG_DIR, exist_ok=True)
+    _file_handler = logging.handlers.RotatingFileHandler(
+        os.path.join(LOG_DIR, "bot.log"),
+        maxBytes=50 * 1024 * 1024,  # 50 MB per file
+        backupCount=5,              # keep 5 rotated files
+        encoding="utf-8",
+    )
+    _file_handler.setLevel(logging.INFO)
+    _file_handler.setFormatter(
+        logging.Formatter("%(asctime)s | %(levelname)-5s | %(message)s")
+    )
+    logging.getLogger().addHandler(_file_handler)
+    logging.info(f"File logging enabled: {LOG_DIR}/bot.log (50MB x5 rotated)")
+except Exception as _log_setup_err:
+    logging.warning(
+        f"File logging setup failed: {_log_setup_err} — falling back to stdout only"
+    )
 
 
 # =========================================================================
