@@ -34,7 +34,7 @@ HEDGE_MODE = True
 
 # --- Grid settings ---
 # Number of limit orders per side (LONG / SHORT)
-GRID_ORDERS_PER_SIDE = 8
+GRID_ORDERS_PER_SIDE = 10
 
 # Base distance for the first grid level as percentage.
 # With Fibonacci step mode, level i gap = fib(i) * GRID_BASE_STEP_PERCENT.
@@ -68,7 +68,7 @@ GRID_CANCEL_SHIFT_PERCENT = 0.05
 # The bot calculates base_qty so that total notional across all levels fits
 # the allocated budget (balance * usage% / num_symbols / 2 sides).
 MIN_ORDER_USD = 5.2
-MAX_ORDER_USD = 50
+MAX_ORDER_USD = 5.5
 
 # Percentage of available USDT balance to use for trading.
 BALANCE_USAGE_PERCENT = 50
