@@ -34,7 +34,7 @@ HEDGE_MODE = True
 
 # --- Grid settings ---
 # Number of limit orders per side (LONG / SHORT)
-GRID_ORDERS_PER_SIDE = 10
+GRID_ORDERS_PER_SIDE = 9
 
 # Base distance for the first grid level as percentage.
 # With Fibonacci step mode, level i gap = fib(i) * GRID_BASE_STEP_PERCENT.
@@ -79,7 +79,7 @@ TP_PERCENT = 0.07
 
 # SL is placed as a percentage below the last grid level
 # (the furthest order from mark price).
-SL_PERCENT = 0.8
+SL_PERCENT = 0.5
 
 # =========================================================================
 # Trend protection (linear regression on mark price)
