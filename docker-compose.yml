@@ -10,17 +10,6 @@ services:
       - ./.env:/app/.env:ro
       # Mount config.py — edit without rebuilding, just restart
       - ./config.py:/app/config.py:ro
-      # Mount logs directory — bot writes /app/logs/bot.log inside container,
-      # which persists to ./logs/ on the host. Rotation: 50MB x 5 files.
-      - ./logs:/app/logs
-    logging:
-      driver: "json-file"
-      options:
-        # Bumped from 1m x 1 (was overwriting logs in ~30 min).
-        # Now keeps 10 MB x 5 = 50 MB of stdout/stderr as a safety net
-        # (real persistent logging goes to ./logs/bot.log via file handler).
-        max-size: "10m"
-        max-file: "5"
     networks:
       - newsetka-net
 
