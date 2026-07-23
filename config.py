@@ -34,7 +34,7 @@ HEDGE_MODE = True
 
 # --- Grid settings ---
 # Number of limit orders per side (LONG / SHORT)
-GRID_ORDERS_PER_SIDE = 9
+GRID_ORDERS_PER_SIDE = 5
 
 # Base distance for the first grid level as percentage.
 # With Fibonacci step mode, level i gap = fib(i) * GRID_BASE_STEP_PERCENT.
@@ -56,11 +56,11 @@ GRID_STEP_MODE = "fibonacci"
 # 1.0 = equal volume on all levels (old behavior)
 # 1.5 = conservative DCA (level 12 = 86.5x base_qty)
 # 2.0 = standard DCA (level 12 = 2048x base_qty)
-GRID_VOLUME_MULTIPLIER = 1.5
+GRID_VOLUME_MULTIPLIER = 2
 
 # How far the price must move from the grid center before the grid is
 # cancelled and re-placed at the new price (percentage).
-GRID_CANCEL_SHIFT_PERCENT = 0.05
+GRID_CANCEL_SHIFT_PERCENT = 0.06
 
 # --- Order sizing ---
 # Minimum and maximum notional value for the BASE (first) grid order (in USDT).
@@ -75,11 +75,11 @@ BALANCE_USAGE_PERCENT = 50
 
 # --- Take-profit and Stop-loss ---
 # TP is placed as a percentage from the average entry price.
-TP_PERCENT = 0.07
+TP_PERCENT = 0.08
 
 # SL is placed as a percentage below the last grid level
 # (the furthest order from mark price).
-SL_PERCENT = 0.5
+SL_PERCENT = 0.3
 
 # =========================================================================
 # Trend protection (linear regression on mark price)
