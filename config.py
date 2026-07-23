@@ -81,9 +81,9 @@ TP_PERCENT = 0.08
 # (the furthest order from mark price).
 SL_PERCENT = 0.3
 
-# =========================================================================
+# ========================================================================
 # Trend protection (linear regression on mark price)
-# =========================================================================
+# ========================================================================
 
 # Enable or disable trend protection.
 # When enabled, the bot will not place grid orders against the detected
